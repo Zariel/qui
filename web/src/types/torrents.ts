@@ -272,6 +272,8 @@ export interface TorrentResponse {
   hasMore?: boolean
   trackerHealthSupported?: boolean
   isCrossInstance?: boolean
+  /** Cross-instance aggregation completed with one or more instances unavailable. */
+  partialResults?: boolean
   instanceMeta?: InstanceMeta  // Real-time instance health from SSE
   /** Frontend-assembled only: number of pages combined into this loaded-window response. */
   windowPageCount?: number

@@ -75,10 +75,12 @@ function dedupeRows<T>(rows: T[], keyOf: (row: T) => string): T[] {
 // it may replace the whole list with it.
 function combineWindowPages(pages: TorrentResponse[]): TorrentResponse {
   const last = pages[pages.length - 1]
+  const partialResults = pages.some(page => page.partialResults === true)
 
   if (last.isCrossInstance) {
     return {
       ...last,
+      partialResults,
       windowPageCount: pages.length,
       crossInstanceTorrents: dedupeRows(
         pages.flatMap(page => page.crossInstanceTorrents ?? page.cross_instance_torrents ?? []),
@@ -89,6 +91,7 @@ function combineWindowPages(pages: TorrentResponse[]): TorrentResponse {
 
   return {
     ...last,
+    partialResults,
     windowPageCount: pages.length,
     torrents: dedupeRows(pages.flatMap(page => page.torrents ?? []), row => row.hash),
   }
@@ -147,6 +150,11 @@ export function useTorrentsList(
   // a render that later suspends must not publish uncommitted counts as fallback.
   const committedCountsSnapshotRef = useRef(lastCountsSnapshot)
   const lastStreamSnapshotScopeRef = useRef("")
+  // A partial cross-instance response must not replace a complete snapshot. Keep
+  // the last complete response per view so the active metadata and list remain
+  // coherent while an unavailable instance recovers.
+  const [lastCompleteData, setLastCompleteData] = useState<{ scopeKey: string; data: TorrentResponse } | null>(null)
+  const lastCompleteDataRef = useRef<{ scopeKey: string; data: TorrentResponse } | null>(null)
   // The last full page-0 snapshot, retained as the base that incoming SSE deltas are
   // applied against. Held in a ref (not state) so a delta can read the just-applied
   // snapshot synchronously without re-running this callback. Seeded by every full
@@ -357,6 +365,10 @@ export function useTorrentsList(
         return
       }
 
+      if (payload.data?.partialResults && lastCompleteDataRef.current?.scopeKey === viewScopeKey) {
+        return
+      }
+
       // Resolve the frame to a full page-0 snapshot. Full frames (init/update and the
       // periodic delta keyframe) carry the whole page; a delta frame carries only the
       // changed rows and is reconstructed against the retained baseline. Either way the
@@ -391,6 +403,12 @@ export function useTorrentsList(
       // Retain the reconstructed full snapshot as the base for the next delta.
       lastFullSnapshotRef.current = data
       lastStreamSnapshotScopeRef.current = viewScopeKey
+
+      if (!data.partialResults) {
+        const complete = { scopeKey: viewScopeKey, data }
+        lastCompleteDataRef.current = complete
+        setLastCompleteData(previous => previous?.scopeKey === viewScopeKey && previous.data === data ? previous : complete)
+      }
 
       setLastStreamSnapshot(data)
       rememberCountsSnapshot(viewScopeKey, data.counts, committedCountsSnapshotRef.current)
@@ -480,11 +498,13 @@ export function useTorrentsList(
     setLastKnownTotal(0)
     setLastProcessedPage(-1)
     setLastStreamSnapshot(null)
+    setLastCompleteData(null)
     lastStreamSnapshotScopeRef.current = ""
     // Drop the delta baseline so a delta from the previous view can never be applied
     // against the new one; the new subscription's init reseeds it.
     lastFullSnapshotRef.current = null
     lastAppliedDataRef.current = null
+    lastCompleteDataRef.current = null
   }, [viewScopeKey])
 
   useEffect(() => {
@@ -573,13 +593,16 @@ export function useTorrentsList(
   const activeData = useMemo(() => {
     const scopedStreamSnapshot =
       lastStreamSnapshotScopeRef.current === viewScopeKey ? lastStreamSnapshot : null
+    const scopedCompleteData =
+      lastCompleteData?.scopeKey === viewScopeKey ? lastCompleteData.data : null
+    const safeData = data?.partialResults && scopedCompleteData ? scopedCompleteData : data
 
-    if (shouldDisablePolling && scopedStreamSnapshot) {
+    if (shouldDisablePolling && scopedStreamSnapshot && !scopedStreamSnapshot.partialResults) {
       return scopedStreamSnapshot
     }
 
-    return data ?? scopedStreamSnapshot ?? null
-  }, [data, lastStreamSnapshot, shouldDisablePolling, viewScopeKey])
+    return safeData ?? scopedStreamSnapshot ?? scopedCompleteData ?? null
+  }, [data, lastCompleteData, lastStreamSnapshot, shouldDisablePolling, viewScopeKey])
 
   // Update torrents when data arrives or changes (including optimistic updates)
   useEffect(() => {
@@ -598,10 +621,20 @@ export function useTorrentsList(
       return
     }
 
+    if (data.partialResults && lastCompleteDataRef.current?.scopeKey === viewScopeKey) {
+      return
+    }
+
     if (data === lastAppliedDataRef.current) {
       return
     }
     lastAppliedDataRef.current = data
+
+    if (!data.partialResults) {
+      const complete = { scopeKey: viewScopeKey, data }
+      lastCompleteDataRef.current = complete
+      setLastCompleteData(previous => previous?.scopeKey === viewScopeKey && previous.data === data ? previous : complete)
+    }
 
     updateAppInfoCache(data)
     updateMetadataCache(data)

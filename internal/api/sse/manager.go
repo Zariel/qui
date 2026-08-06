@@ -1386,6 +1386,14 @@ func (m *StreamManager) buildGroupUpdatePayload(group *subscriptionGroup, opts S
 	if errPayload != nil {
 		return errPayload
 	}
+	if response.PartialResults {
+		// A cross-instance aggregate is not authoritative while one of its members
+		// is unavailable. Do not feed its truncated rows into the shared delta
+		// baseline: doing so would make every subscriber remove the unavailable
+		// instance's rows until the next full snapshot. Keep the last complete page
+		// on screen and use a heartbeat to keep the connection alive.
+		return &StreamPayload{Type: streamEventHeartbeat, Meta: metaCopy}
+	}
 
 	return group.buildUpdatePayload(opts, response, metaCopy)
 }

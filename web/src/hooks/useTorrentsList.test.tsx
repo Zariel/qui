@@ -1260,6 +1260,83 @@ describe("useTorrentsList", () => {
     )
   })
 
+  it("keeps a complete cross-instance snapshot when a partial stream frame arrives", async () => {
+    streamState = { ...DISCONNECTED, connected: true }
+    const completeRows = [
+      { ...makeTorrent({ hash: "a", name: "alpha" }), instanceId: 1, instanceName: "one" },
+      { ...makeTorrent({ hash: "b", name: "beta" }), instanceId: 2, instanceName: "two" },
+    ] as CrossInstanceTorrent[]
+
+    const { result } = renderHook(
+      () => useTorrentsList(0, { pollingEnabled: false }),
+      { wrapper: makeWrapper() }
+    )
+
+    act(() => {
+      capturedOnMessage?.({
+        type: "init",
+        data: makeResponse({
+          isCrossInstance: true,
+          cross_instance_torrents: completeRows,
+          total: 2,
+          hasMore: false,
+        }),
+      })
+    })
+    await flush()
+
+    act(() => {
+      capturedOnMessage?.({
+        type: "update",
+        data: makeResponse({
+          isCrossInstance: true,
+          cross_instance_torrents: [completeRows[0]],
+          total: 1,
+          hasMore: false,
+          partialResults: true,
+        }),
+      })
+    })
+    await flush()
+
+    expect(result.current.torrents.map(t => t.hash)).toEqual(["a", "b"])
+    expect(result.current.totalCount).toBe(2)
+  })
+
+  it("keeps complete cross-instance REST data when a partial response arrives", async () => {
+    const completeRows = [
+      { ...makeTorrent({ hash: "a", name: "alpha" }), instanceId: 1, instanceName: "one" },
+      { ...makeTorrent({ hash: "b", name: "beta" }), instanceId: 2, instanceName: "two" },
+    ] as CrossInstanceTorrent[]
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    let partial = false
+
+    mockedApi.getCrossInstanceTorrents.mockImplementation(() => Promise.resolve(
+      makeResponse({
+        isCrossInstance: true,
+        cross_instance_torrents: partial ? [completeRows[0]] : completeRows,
+        total: partial ? 1 : 2,
+        hasMore: false,
+        partialResults: partial,
+      })
+    ))
+
+    const { result } = renderHook(
+      () => useTorrentsList(0, { pollingEnabled: false }),
+      { wrapper: makeWrapper(queryClient) }
+    )
+    await flush()
+
+    partial = true
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ["torrents-list", 0], exact: false, type: "active" })
+    })
+    await flush()
+
+    expect(result.current.torrents.map(t => t.hash)).toEqual(["a", "b"])
+    expect(result.current.totalCount).toBe(2)
+  })
+
   it("does not poll page 0 once the stream is connected", async () => {
     // Connected stream gates the page-0 REST query off entirely; no poll ever fires.
     streamState = { ...DISCONNECTED, connected: true }
