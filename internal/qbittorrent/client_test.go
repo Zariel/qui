@@ -72,30 +72,6 @@ func (m *mockSyncEventSink) getTrackerHealthUpdates() []int {
 	return append([]int(nil), m.trackerHealthUpdates...)
 }
 
-func TestClientUpdateServerStateDoesNotBlockOnClientMutex(t *testing.T) {
-	t.Parallel()
-
-	client := &Client{}
-	client.mu.RLock()
-	defer client.mu.RUnlock()
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		client.updateServerState(&qbt.MainData{
-			ServerState: qbt.ServerState{
-				ConnectionStatus: "connected",
-			},
-		})
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("updateServerState blocked waiting for Client.mu write lock")
-	}
-}
-
 func TestClientSubcategoriesAlwaysEnabledCapability(t *testing.T) {
 	t.Parallel()
 
@@ -504,16 +480,14 @@ func TestClientHandleSyncManagerErrorIgnoresContextStopped(t *testing.T) {
 
 			sink := &mockSyncEventSink{}
 			client := &Client{
-				instanceID:      42,
-				isHealthy:       true,
-				syncEventSink:   sink,
-				lastServerState: &qbt.ServerState{ConnectionStatus: "connected"},
+				instanceID:    42,
+				isHealthy:     true,
+				syncEventSink: sink,
 			}
 
 			client.handleSyncManagerError(tc.err)
 
 			require.True(t, client.IsHealthy())
-			require.NotNil(t, client.GetCachedServerState())
 			require.Empty(t, sink.getSyncErrorCalls())
 		})
 	}
@@ -542,16 +516,14 @@ func TestClientHandleSyncManagerErrorMarksUnhealthyForDeadline(t *testing.T) {
 
 			sink := &mockSyncEventSink{}
 			client := &Client{
-				instanceID:      42,
-				isHealthy:       true,
-				syncEventSink:   sink,
-				lastServerState: &qbt.ServerState{ConnectionStatus: "connected"},
+				instanceID:    42,
+				isHealthy:     true,
+				syncEventSink: sink,
 			}
 
 			client.handleSyncManagerError(tc.err)
 
 			require.False(t, client.IsHealthy())
-			require.Nil(t, client.GetCachedServerState())
 			require.Len(t, sink.getSyncErrorCalls(), 1)
 		})
 	}
@@ -562,16 +534,14 @@ func TestClientHandleSyncManagerErrorMarksUnhealthyForRealError(t *testing.T) {
 
 	sink := &mockSyncEventSink{}
 	client := &Client{
-		instanceID:      42,
-		isHealthy:       true,
-		syncEventSink:   sink,
-		lastServerState: &qbt.ServerState{ConnectionStatus: "connected"},
+		instanceID:    42,
+		isHealthy:     true,
+		syncEventSink: sink,
 	}
 
 	client.handleSyncManagerError(errors.New("connection refused"))
 
 	require.False(t, client.IsHealthy())
-	require.Nil(t, client.GetCachedServerState())
 	require.Len(t, sink.getSyncErrorCalls(), 1)
 }
 

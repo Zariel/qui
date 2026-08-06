@@ -1728,13 +1728,10 @@ func (sm *SyncManager) GetTorrentsWithFilters(ctx context.Context, instanceID in
 
 	if syncManager != nil {
 		cacheMetadata = newCacheMetadata(syncManager.LastSuccessfulSyncTime(), time.Now())
+		serverState = resolveServerState(syncManager, mainDataServerState(mainData))
 	}
 
 	if client != nil {
-		if cached := client.GetCachedServerState(); cached != nil {
-			serverState = cached
-		}
-
 		if info, err := client.GetAppInfo(ctx); err != nil {
 			log.Error().
 				Err(err).

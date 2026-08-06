@@ -87,11 +87,9 @@ type Client struct {
 	// optimisticUpdates stores temporary optimistic state changes for this instance
 	optimisticUpdates    *ttlcache.Cache[string, *OptimisticTorrentUpdate]
 	trackerExclusions    map[string]map[string]struct{} // Domains to hide hashes from until fresh sync arrives
-	lastServerState      *qbt.ServerState
 	appInfoCache         *AppInfo
 	appInfoFetchedAt     time.Time
 	mu                   sync.RWMutex
-	serverStateMu        sync.RWMutex
 	healthMu             sync.RWMutex
 	appInfoMu            sync.RWMutex
 	preferencesCache     *qbt.AppPreferences
@@ -189,7 +187,6 @@ func NewClientWithTimeout(instanceID int, instanceHost, username, password, apiK
 	// Set up health check callbacks
 	syncOpts.OnUpdate = func(data *qbt.MainData) {
 		client.updateHealthStatus(true)
-		client.updateServerState(data)
 		client.handleCompletionUpdates(data)
 		client.handleAddedUpdates(data)
 		log.Trace().Int("instanceID", instanceID).Int("torrentCount", len(data.Torrents)).Msg("Sync manager update received, marking client as healthy")
@@ -271,7 +268,6 @@ func (c *Client) handleSyncManagerError(err error) {
 	}
 
 	c.updateHealthStatus(false)
-	c.clearServerState()
 	log.Warn().Err(err).Int("instanceID", c.instanceID).Msg("Sync manager error received, marking client as unhealthy")
 
 	c.dispatchSyncError(err)
@@ -397,38 +393,6 @@ func (c *Client) applyCapabilitiesLocked(version string) {
 	c.supportsSetRSSFeedURL = !v.LessThan(rssSetFeedURLMinVersion)
 	c.supportsShareLimitsAction = !v.LessThan(shareLimitsActionMinVersion)
 	c.supportsShareLimitsMode = !v.LessThan(shareLimitsModeMinVersion)
-}
-
-func (c *Client) updateServerState(data *qbt.MainData) {
-	c.serverStateMu.Lock()
-	defer c.serverStateMu.Unlock()
-
-	if data == nil || data.ServerState == (qbt.ServerState{}) {
-		c.lastServerState = nil
-		return
-	}
-
-	stateCopy := data.ServerState
-	c.lastServerState = &stateCopy
-}
-
-func (c *Client) clearServerState() {
-	c.serverStateMu.Lock()
-	defer c.serverStateMu.Unlock()
-
-	c.lastServerState = nil
-}
-
-func (c *Client) GetCachedServerState() *qbt.ServerState {
-	c.serverStateMu.RLock()
-	defer c.serverStateMu.RUnlock()
-
-	if c.lastServerState == nil {
-		return nil
-	}
-
-	stateCopy := *c.lastServerState
-	return &stateCopy
 }
 
 // UpdateWithPeersData triggers a sync on the peer manager to keep it warm after intercepting peer data
