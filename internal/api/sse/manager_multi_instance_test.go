@@ -199,3 +199,38 @@ func TestMultiInstanceUpdateUsesCrossInstanceProvider(t *testing.T) {
 		return provider.crossInstanceCalls > 0 && provider.torrentsCalls == 0
 	}, 2*time.Second, 10*time.Millisecond, "expected the aggregated group to build via GetCrossInstanceTorrentsWithFilters")
 }
+
+func TestBuildGroupUpdatePayloadDoesNotAdvanceOnPartialCrossInstanceResults(t *testing.T) {
+	provider := &fakeSyncProvider{
+		crossInstanceResponse: &qbittorrent.TorrentResponse{
+			CrossInstanceTorrents: []qbittorrent.CrossInstanceTorrentView{ci(1, "a", "A")},
+			Total:                 1,
+			IsCrossInstance:       true,
+			PartialResults:        true,
+		},
+	}
+	manager := NewStreamManager(nil, provider, nil)
+	t.Cleanup(func() { _ = manager.Shutdown(context.Background()) })
+
+	opts := StreamOptions{InstanceIDs: []int{1, 2}, Limit: 100}
+	group := &subscriptionGroup{key: "partial-cross-instance", options: opts}
+
+	partial := manager.buildGroupUpdatePayload(group, opts, &StreamMeta{Timestamp: time.Now()})
+	require.NotNil(t, partial)
+	require.Equal(t, streamEventHeartbeat, partial.Type)
+	require.Nil(t, partial.Data)
+	require.False(t, group.baselineSeeded, "partial rows must not replace the complete baseline")
+
+	provider.mu.Lock()
+	provider.crossInstanceResponse = &qbittorrent.TorrentResponse{
+		CrossInstanceTorrents: []qbittorrent.CrossInstanceTorrentView{ci(1, "a", "A"), ci(2, "b", "B")},
+		Total:                 2,
+		IsCrossInstance:       true,
+	}
+	provider.mu.Unlock()
+
+	complete := manager.buildGroupUpdatePayload(group, opts, &StreamMeta{Timestamp: time.Now()})
+	require.NotNil(t, complete)
+	require.Equal(t, streamEventUpdate, complete.Type, "the first complete response must seed a full baseline")
+	require.Len(t, complete.Data.CrossInstanceTorrents, 2)
+}
