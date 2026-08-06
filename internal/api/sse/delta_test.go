@@ -145,18 +145,17 @@ func TestBuildUpdatePayloadHasNoPeriodicKeyframe(t *testing.T) {
 	}
 }
 
-// TestVolatileFieldsDoNotTriggerResend is the core of the streaming fix: a torrent
-// whose only change is a per-second counter (reannounce/time_active/...) or peer
-// jitter must NOT be re-sent, otherwise a mostly-idle page re-sends nearly every row
-// every tick and the "delta" is almost a full snapshot.
-func TestVolatileFieldsDoNotTriggerResend(t *testing.T) {
+// TestRenderedTorrentFieldsTriggerResend ensures fields that are visible in the
+// torrent views are not hidden behind an aggregate-only delta.
+func TestRenderedTorrentFieldsTriggerResend(t *testing.T) {
 	g := &subscriptionGroup{}
 	opts := StreamOptions{InstanceID: 1}
 
 	base := &qbt.Torrent{Hash: "a", Name: "A", Reannounce: 1800, TimeActive: 100, SeedingTime: 100, NumSeeds: 3}
 	g.buildUpdatePayload(opts, singleResp(qbittorrent.TorrentView{Torrent: base}), &StreamMeta{})
 
-	// Only volatile fields move (counters tick, peer count jitters): no resend.
+	// Fields that used to be masked move (counters tick, peer count jitters). They
+	// still need a row update because the table renders their current values.
 	ticked := *base
 	ticked.Reannounce = 1798
 	ticked.TimeActive = 102
@@ -166,7 +165,7 @@ func TestVolatileFieldsDoNotTriggerResend(t *testing.T) {
 	ticked.Popularity = 1.5
 	idle := g.buildUpdatePayload(opts, singleResp(qbittorrent.TorrentView{Torrent: &ticked}), &StreamMeta{})
 	require.Equal(t, streamEventDelta, idle.Type)
-	require.Empty(t, changedHashes(idle), "a torrent that only ticked its counters must not be re-sent")
+	require.Equal(t, []string{"a"}, changedHashes(idle), "rendered counter changes must re-send the row")
 
 	// A real change (download speed) does trigger a resend.
 	active := ticked

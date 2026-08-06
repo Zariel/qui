@@ -28,13 +28,10 @@ import (
 //     changed. Aggregate metadata (stats, counts, serverState, ...) always travels
 //     in full so dashboard speeds stay live even on a tick with no row changes.
 //
-// There is intentionally no periodic full keyframe: a recurring full page re-send is
-// hundreds of KB and, over an HTTP/2 proxy, head-of-line-blocks every other request
-// on the shared connection each time it fires. Correctness instead rests on
-// init-seeds-baseline (the client's init equals the server baseline) plus a fresh
-// init on every reconnect; the only drift window is the sub-millisecond gap between
-// subscription registration and go-sse subscribe, which self-heals on the next
-// reconnect.
+// The row fingerprint includes the complete torrent payload. This is deliberately
+// broader than the fields that tend to change during normal operation: the frontend
+// renders peer counts, ETA, activity timestamps, tracker health, and other fields
+// that must not be hidden behind an aggregate-only delta.
 //
 // The caller holds no lock; the group's single-processor invariant (the sending
 // flag) already serializes ticks, and baselineMu guards the baseline against the
@@ -94,9 +91,7 @@ func (g *subscriptionGroup) buildUpdatePayload(opts StreamOptions, resp *qbittor
 // seedBaselineIfEmpty primes the delta baseline from a freshly built init snapshot,
 // but only if the group has no baseline yet. Seeding at init makes the client's init
 // snapshot and the server baseline identical, so the very next tick is a clean delta
-// the client applies without drift. A later joiner to an already-seeded group does
-// not re-seed (that would desync existing subscribers); its init may differ slightly
-// from the shared baseline until it reconnects.
+// the client applies without drift.
 func (g *subscriptionGroup) seedBaselineIfEmpty(opts StreamOptions, resp *qbittorrent.TorrentResponse) {
 	if resp == nil {
 		return
@@ -143,42 +138,17 @@ func computeRowDelta[T any](rows []T, keyOf func(T) string, fpOf func(T) uint64,
 	return order, changedIdx, newFP
 }
 
-// maskVolatile zeroes the per-second counters and swarm/peer-count jitter that change
-// on an otherwise-idle torrent every tick. They are excluded from change detection
-// only: on a mostly-idle instance these are the sole fields that move each tick, so
-// hashing them would flag nearly every row as changed and make each "delta" almost
-// as large as a full snapshot (the root cause of the stream saturating an HTTP/2
-// connection). The excluded fields still ride along with their current value whenever
-// a row is sent for a real change (speed, progress, state, ratio, ...); they are just
-// not on their own a reason to resend a row.
-func maskVolatile(t *qbt.Torrent) qbt.Torrent {
-	masked := *t
-	masked.Reannounce = 0
-	masked.TimeActive = 0
-	masked.SeedingTime = 0
-	masked.ETA = 0
-	masked.LastActivity = 0
-	masked.SeenComplete = 0
-	masked.Popularity = 0
-	masked.Availability = 0
-	masked.NumComplete = 0
-	masked.NumIncomplete = 0
-	masked.NumLeechs = 0
-	masked.NumSeeds = 0
-	return masked
-}
-
 func writeTorrentFingerprint(h hash.Hash64, t *qbt.Torrent) {
 	if t == nil {
 		return
 	}
-	masked := maskVolatile(t)
-	if encoded, err := json.Marshal(&masked); err == nil {
+	if encoded, err := json.Marshal(t); err == nil {
 		_, _ = h.Write(encoded)
 	}
 }
 
-// singleRowFingerprint hashes a single-instance row's change-relevant content.
+// singleRowFingerprint hashes all serialized torrent fields that can be rendered
+// in a single-instance row.
 func singleRowFingerprint(tv qbittorrent.TorrentView) uint64 {
 	h := fnv.New64a()
 	writeTorrentFingerprint(h, tv.Torrent)
